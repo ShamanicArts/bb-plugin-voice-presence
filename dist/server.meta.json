@@ -1,0 +1,11 @@
+{
+  "sdkMajor": 0,
+  "sdkVersion": "0.5.29",
+  "artifactFormatVersion": 1,
+  "pluginId": "voice-presence",
+  "pluginVersion": "0.3.5",
+  "builtWith": {
+    "bbVersion": "0.44.0",
+    "pluginSdkVersion": "0.5.29"
+  }
+}

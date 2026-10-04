@@ -1,0 +1,69 @@
+{
+  "name": "bb-plugin-voice-presence",
+  "version": "0.3.5",
+  "type": "module",
+  "engines": {
+    "bb": ">=0.43",
+    "bbPluginSdk": ">=0.4.101"
+  },
+  "bb": {
+    "name": "Voice Presence",
+    "description": "Join a thread-owned GPT-live voice call with durable context, narration, mute, and transfer controls.",
+    "branding": {
+      "icon": "Mic"
+    },
+    "server": "./server.ts",
+    "app": "./app.tsx",
+    "host": "./host.ts"
+  },
+  "dependencies": {
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@get-bb/plugin-sdk": "0.5.29",
+    "@testing-library/react": "^16.3.3",
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "better-sqlite3": "^12.0.0",
+    "cron-parser": "^5.5.0",
+    "hono": "^4.11.9",
+    "jsdom": "^29.1.1",
+    "typescript": "^5.7.0",
+    "vitest": "^4.1.11",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0"
+  },
+  "license": "MIT",
+  "author": "Lucas Shamanic",
+  "description": "Join a thread-owned GPT-live voice call with durable context, narration, mute, and transfer controls.",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ShamanicArts/bb-plugin-voice-presence.git"
+  },
+  "homepage": "https://github.com/ShamanicArts/bb-plugin-voice-presence#readme",
+  "bugs": {
+    "url": "https://github.com/ShamanicArts/bb-plugin-voice-presence/issues"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "build": "bb plugin build"
+  },
+  "files": [
+    "dist/",
+    "src/",
+    "lib/",
+    "*.ts",
+    "*.tsx",
+    "!*.test.ts",
+    "!*.test.tsx",
+    "!vitest.config.ts",
+    "README.md",
+    "PLUGIN_OVERVIEW.md",
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md",
+    "!dist/*.map"
+  ]
+}

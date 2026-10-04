@@ -1,0 +1,9 @@
+node_modules/
+dist/*.map
+.env
+.env.*
+!.env.example
+artifacts/
+test-results/
+playwright-report/
+*.tgz
