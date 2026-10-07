@@ -485,3 +485,16 @@ describe("owner-thread narration", () => {
     });
   });
 });
+
+it("refuses an identified handoff until its finalized user transcript exists", async () => {
+  const { rpc, calls, harness } = await setup();
+  const call = await rpc("call_start", { threadId: THREAD }) as { callId: string };
+  const handoff = { callId: call.callId, handoffId: "race", utteranceId: "in-flight", text: "partial" };
+  expect(await rpc("call_handoff", handoff)).toEqual({ ok: false, duplicate: false });
+  expect(calls.some((entry) => entry.method === "send")).toBe(false);
+  await rpc("call_transcript", { callId: call.callId, itemId: "in-flight", role: "user", text: "complete spoken request" });
+  expect(await rpc("call_handoff", handoff)).toEqual({ ok: true, duplicate: false });
+  expect((calls.find((entry) => entry.method === "send")?.args.input as Array<{ text: string }>)[0]?.text)
+    .toBe("complete spoken request");
+  await harness.lifecycle.dispose();
+});

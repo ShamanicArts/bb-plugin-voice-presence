@@ -10,13 +10,14 @@ import {
 } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "./server";
 import { callStatusLabel, type CallConnectionState } from "./call-presentation";
-import { parseRealtimeVoiceEvent, REALTIME_DATA_CHANNEL } from "./realtime-events";
+import { parseRealtimeVoiceEvent, REALTIME_DATA_CHANNEL, type RealtimeVoiceEvent } from "./realtime-events";
 import { VoicePresence } from "./src/presence/VoicePresence";
 import { voicePhaseStyle } from "./src/presence/voicePresenceTheme";
 import { deriveVoicePresenceIdentity } from "./src/presence/voicePresenceIdentity";
 import type { VoicePresencePhase } from "./src/presence/voicePresenceTheme";
 import type { VoicePresenceIdentity } from "./src/presence/voicePresenceIdentity";
-import { resolvePhase, rmsLevel, smoothLevel } from "./audio";
+import { InputActivity, resolvePhase, rmsLevel, smoothAudioLevel } from "./audio";
+import { CallHandoffQueue } from "./call-turns";
 import { usePortalScopeProps } from "./lib/portal-scope";
 
 const CLIENT_INSTANCE_STORAGE_KEY = "bb.voice-presence.client-instance";
@@ -63,16 +64,30 @@ class OrbBoundary extends Component<
  * The orb without WebGL: same theme tokens and phase colours, so a machine that
  * cannot give a GL context still gets an orb rather than a hole.
  */
-function CssOrb({ phase, identity }: { phase: VoicePresencePhase; identity: VoicePresenceIdentity }) {
-  const style = voicePhaseStyle(phase, identity) as Record<string, string>;
-  const accent = style["--voice-accent"] ?? "currentColor";
-  const highlight = style["--voice-highlight"] ?? accent;
+export function CssOrb({ phase, identity, activityLevel }: { phase: VoicePresencePhase; identity: VoicePresenceIdentity; activityLevel: { current: number } }) {
+  const orb = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const reduced = window.matchMedia("(prefers-reduced-motion: reduce)");
+    let frame = 0;
+    const tick = () => {
+      const level = Math.max(0, Math.min(1, activityLevel.current));
+      if (orb.current !== null) {
+        orb.current.style.transform = reduced.matches ? "none" : `scale(${0.78 + level * 0.22})`;
+        orb.current.style.opacity = String(phase === "muted" ? 0.6 : 0.7 + level * 0.3);
+      }
+      frame = requestAnimationFrame(tick);
+    };
+    tick();
+    return () => cancelAnimationFrame(frame);
+  }, [activityLevel, phase]);
   return (
     <div
       aria-hidden="true"
-      className="size-full animate-pulse"
+      ref={orb}
+      className="size-full motion-safe:transition-transform motion-safe:duration-100"
       style={{
-        background: `radial-gradient(circle at 34% 32%, ${highlight} 0%, ${accent} 46%, transparent 72%)`,
+        ...voicePhaseStyle(phase, identity),
+        background: "radial-gradient(circle at 34% 32%, var(--voice-highlight) 0%, var(--voice-accent) 46%, transparent 72%)",
         opacity: phase === "muted" ? 0.6 : 0.95,
       }}
     />
@@ -202,6 +217,18 @@ function useCallAudio(
   const [connection, setConnection] = useState<CallConnectionState>("disconnected");
   const [muted, setMutedState] = useState(false);
   const mutedRef = useRef(false);
+  const receiveHostFinal = useRef<((event: RealtimeVoiceEvent) => void) | null>(null);
+  // Codex also relays finalized transcripts through the host signal path. Use
+  // its explicit item identity if the direct channel final arrives late or is
+  // absent; never promote a host delta to a completed user utterance.
+  useRealtime("voice-call-event", useCallback((payload: unknown) => {
+    const event = payload as { callId?: string; kind?: string; final?: boolean; itemId?: string | null; role?: string; text?: string } | null;
+    if (event?.callId !== callId || event.kind !== "transcript" || event.final !== true ||
+      typeof event.itemId !== "string" || event.itemId.length === 0 ||
+      typeof event.text !== "string" || event.text.trim() === "" ||
+      (event.role !== "user" && event.role !== "assistant")) return;
+    receiveHostFinal.current?.({ type: "transcript.done", itemId: event.itemId, role: event.role, text: event.text });
+  }, [callId]));
 
   const setMuted = useCallback((next: boolean) => {
     mutedRef.current = next;
@@ -240,6 +267,36 @@ function useCallAudio(
     let mediaTimer: number | null = null;
     let micLevel = 0;
     let outputLevel = 0;
+    let inputSpeech: boolean | null = null;
+    let speechItemId: string | null = null;
+    let inputActive = false;
+    let lastOutputAt: number | null = null;
+    let previousTick = performance.now();
+    const inputActivity = new InputActivity();
+    const handoffs = new CallHandoffQueue();
+    // Persist a final caption before delivering a handoff that references it.
+    let persistence: Promise<unknown> = Promise.resolve();
+    const reportError = (cause: unknown) => {
+      if (!disposed) setError(cause instanceof Error ? cause.message : String(cause));
+    };
+    const deliver = (request: { id: string; utteranceId: string | null; text: string }) => {
+      persistence = persistence.then(async () => {
+        if (disposed) return;
+        if (inputSpeech === true && !mutedRef.current) {
+          handoffs.defer(request);
+          return;
+        }
+        const result = await rpcRef.current.call("call_handoff", {
+          callId, handoffId: request.id, utteranceId: request.utteranceId, text: request.text,
+        });
+        if (!result.ok) throw new Error("The voice request could not be handed to the thread.");
+      }).catch(reportError);
+    };
+    const flushHandoffs = () => {
+      // Only an explicit provider boundary holds a finalized request. Local
+      // energy is presentation, not a reliable turn boundary or a work veto.
+      for (const request of handoffs.ready(inputSpeech === true && !mutedRef.current)) deliver(request);
+    };
     const resumeOnGestureRef: { current: (() => void) | null } = { current: null };
 
     const start = async () => {
@@ -329,13 +386,8 @@ function useCallAudio(
         // are the only place a spoken turn is marked complete — ported from
         // `VoiceSessionController`'s normalizer.
         const events = peer.createDataChannel(REALTIME_DATA_CHANNEL);
-        let transcriptRole: "user" | "assistant" | null = null;
         let fallbackTranscriptSequence = 0;
         const transcriptDrafts = new Map<
-          "user" | "assistant",
-          { itemId: string; text: string }
-        >();
-        const finalizedTranscripts = new Map<
           "user" | "assistant",
           { itemId: string; text: string }
         >();
@@ -344,21 +396,28 @@ function useCallAudio(
           return transcriptDrafts.get(role)?.itemId
             ?? `live-${role}:${++fallbackTranscriptSequence}`;
         };
-        events.onmessage = (event) => {
-          const parsed = parseRealtimeVoiceEvent(String(event.data));
-          if (parsed === null) return;
+        const receive = (parsed: RealtimeVoiceEvent) => {
+          if (disposed) return;
+          if (parsed.type === "input.speech") {
+            if (!parsed.active && speechItemId !== null && parsed.itemId !== speechItemId) return;
+            if (parsed.active) {
+              speechItemId = parsed.itemId;
+              const stableItemId = effectiveItemId("user", parsed.itemId);
+              if (transcriptDrafts.get("user")?.itemId !== stableItemId) {
+                transcriptDrafts.set("user", { itemId: stableItemId, text: "" });
+              }
+              handoffs.draft(stableItemId);
+            }
+            inputSpeech = parsed.active;
+            inputActive = parsed.active && !mutedRef.current;
+            // An interruption must not leave a stale output hold on screen.
+            if (inputActive) lastOutputAt = null;
+            flushHandoffs();
+            return;
+          }
           if (parsed.type === "handoff") {
-            const utterance = transcriptDrafts.get("user") ?? finalizedTranscripts.get("user");
-            void rpcRef.current
-              .call("call_handoff", {
-                callId,
-                handoffId: parsed.id,
-                utteranceId: utterance?.itemId ?? null,
-                text: utterance?.text.trim() || parsed.text,
-              })
-              .catch((cause: unknown) => {
-                setError(cause instanceof Error ? cause.message : String(cause));
-              });
+            const request = handoffs.request(parsed.id, parsed.text, inputSpeech === true && !mutedRef.current);
+            if (request !== null) deliver(request);
             return;
           }
           if (parsed.type === "error") {
@@ -366,21 +425,23 @@ function useCallAudio(
             return;
           }
           if (parsed.type === "transcript.done") {
-            transcriptRole = parsed.role;
             setTranscript(parsed.text);
             const stableItemId = effectiveItemId(parsed.role, parsed.itemId);
-            transcriptDrafts.delete(parsed.role);
-            finalizedTranscripts.set(parsed.role, { itemId: stableItemId, text: parsed.text });
-            void rpcRef.current
-              .call("call_transcript", {
+            if (transcriptDrafts.get(parsed.role)?.itemId === stableItemId) transcriptDrafts.delete(parsed.role);
+            persistence = persistence.then(async () => {
+              if (disposed) return;
+              const result = await rpcRef.current.call("call_transcript", {
                 callId,
                 itemId: stableItemId,
                 role: parsed.role,
                 text: parsed.text,
-              })
-              .catch((cause: unknown) => {
-                setError(cause instanceof Error ? cause.message : String(cause));
               });
+              if (!result.accepted) throw new Error("The spoken request could not be saved.");
+              if (parsed.role === "user") {
+                handoffs.finalize(stableItemId, parsed.text);
+                flushHandoffs();
+              }
+            }).catch(reportError);
             return;
           }
           const current = transcriptDrafts.get(parsed.role);
@@ -389,8 +450,13 @@ function useCallAudio(
             ? `${current.text}${parsed.text}`
             : parsed.text;
           transcriptDrafts.set(parsed.role, { itemId: stableItemId, text: next });
+          if (parsed.role === "user") handoffs.draft(stableItemId);
           setTranscript(next);
-          transcriptRole = parsed.role;
+        };
+        receiveHostFinal.current = receive;
+        events.onmessage = (event) => {
+          const parsed = parseRealtimeVoiceEvent(String(event.data));
+          if (parsed !== null) receive(parsed);
         };
 
         // Remote audio: played through an <audio> element, exactly as the
@@ -451,18 +517,24 @@ function useCallAudio(
           if (disposed) return;
           micAnalyser.getFloatTimeDomainData(micSamples);
           remoteAnalyser.getFloatTimeDomainData(remoteSamples);
-          micLevel = smoothLevel(micLevel, rmsLevel(micSamples));
-          outputLevel = smoothLevel(outputLevel, rmsLevel(remoteSamples), 0.6, 0.25);
+          const now = performance.now();
+          const elapsedMs = now - previousTick;
+          previousTick = now;
+          micLevel = mutedRef.current ? 0 : smoothAudioLevel(micLevel, rmsLevel(micSamples), elapsedMs);
+          outputLevel = smoothAudioLevel(outputLevel, rmsLevel(remoteSamples), elapsedMs);
+          inputActive = !mutedRef.current && (inputSpeech ?? inputActivity.sample(micLevel, elapsedMs));
+          if (outputLevel > SPEAKING_THRESHOLD) lastOutputAt = now;
           activity.current = Math.max(micLevel, outputLevel);
+          flushHandoffs();
           setPhase(
-            outputLevel <= SPEAKING_THRESHOLD && mutedRef.current
-              ? "muted"
-              : resolvePhase({
-                  connected: true,
-                  micLevel: mutedRef.current ? 0 : micLevel,
-                  sinceOutputMs: outputLevel > SPEAKING_THRESHOLD ? 0 : null,
-                  agentBusy: agentBusyRef.current,
-                }),
+            resolvePhase({
+              connected: peer.connectionState === "connected",
+              micLevel: mutedRef.current ? 0 : micLevel,
+              inputSpeech: inputActive,
+              muted: mutedRef.current,
+              sinceOutputMs: lastOutputAt === null ? null : now - lastOutputAt,
+              agentBusy: agentBusyRef.current,
+            }),
           );
           frame = requestAnimationFrame(tick);
         };
@@ -479,6 +551,7 @@ function useCallAudio(
 
     return () => {
       disposed = true;
+      receiveHostFinal.current = null;
       window.removeEventListener("pointerdown", resumeOnGestureRef.current ?? (() => undefined));
       window.removeEventListener("keydown", resumeOnGestureRef.current ?? (() => undefined));
       if (frame !== null) cancelAnimationFrame(frame);
@@ -817,27 +890,47 @@ function VoiceOrb(): ReactNode {
     : (closedNotice?.status ?? "Call ended");
   const detail = inCall ? problem : closedNotice?.detail ?? null;
 
+  return <CallTray
+    audio={audio} identity={identity} awayFromOwner={awayFromOwner} ownerTitle={ownerTitle}
+    status={status} detail={detail} transcript={transcript} inCall={inCall}
+    canMove={route.threadId !== null && inCall}
+    open={() => navigate.toThread(displayThreadId)} moveHere={moveHere} end={end} reconnect={reconnect}
+  />;
+}
+
+/** Plugin-owned tray shared by the live slot and isolated presentation checks. */
+export function CallTray({ audio, identity, awayFromOwner, ownerTitle, status, detail, transcript,
+  inCall, canMove, open, moveHere, end, reconnect }: {
+  audio: LiveAudio; identity: VoicePresenceIdentity; awayFromOwner: boolean; ownerTitle: string;
+  status: string; detail: string | null; transcript: string; inCall: boolean; canMove: boolean;
+  open: () => void; moveHere: () => Promise<void>; end: () => Promise<void>; reconnect: () => Promise<void>;
+}): ReactNode {
   return (
     <aside
       aria-label="Call controls"
-      className="mx-auto mb-1.5 w-full max-w-xl border-b border-border pb-1.5 text-foreground"
+      className="mx-auto mb-1.5 min-w-0 w-full max-w-xl border-b border-border pb-1.5 text-foreground"
     >
-      <div className="flex min-h-12 items-center gap-2 px-1 py-1">
+      <style>{`
+        @keyframes voice-call-status-enter { from { opacity: 0; transform: translateY(2px); } to { opacity: 1; transform: none; } }
+        .voice-call-status { animation: voice-call-status-enter 180ms ease-out; }
+        @media (prefers-reduced-motion: reduce) { .voice-call-status { animation: none; } }
+      `}</style>
+      <div className="flex min-w-0 min-h-12 flex-wrap items-center gap-2 px-1 py-1">
         <div
           className="relative size-11 shrink-0 overflow-hidden rounded-full border border-border/70 bg-background"
           style={voicePhaseStyle(audio.phase, identity)}
         >
-          <OrbBoundary fallback={<CssOrb phase={audio.phase} identity={identity} />}>
+          <OrbBoundary fallback={<CssOrb phase={audio.phase} identity={identity} activityLevel={audio.activity} />}>
             <VoicePresence phase={audio.phase} identity={identity} activityLevel={audio.activity} />
           </OrbBoundary>
         </div>
-        <div className="min-w-0 flex-1">
+        <div className="min-w-0 flex-1 basis-32">
           <p className="truncate text-[11px] font-medium text-muted-foreground">
             {awayFromOwner ? `Call from ${ownerTitle}` : ownerTitle}
-            <span aria-hidden="true"> · </span>{status}
           </p>
+          <p key={status} className="voice-call-status text-[11px] text-muted-foreground" role="status">{status}</p>
           <p
-            className={detail === null ? "line-clamp-2 text-sm leading-snug" : "line-clamp-2 text-sm leading-snug text-destructive"}
+            className={`line-clamp-2 text-sm leading-snug [overflow-wrap:anywhere] ${detail === null ? "" : "text-destructive"}`}
             aria-live="polite"
             aria-atomic="true"
           >
@@ -845,15 +938,15 @@ function VoiceOrb(): ReactNode {
           </p>
         </div>
         {awayFromOwner ? (
-          <div className="flex shrink-0 items-center gap-1">
+          <div className="flex max-w-full flex-wrap items-center gap-1">
             <button
               type="button"
-              onClick={() => navigate.toThread(displayThreadId)}
+              onClick={open}
               className="rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
             >
               Open
             </button>
-            {route.threadId === null || !inCall ? null : (
+            {!canMove ? null : (
               <button
                 type="button"
                 onClick={() => void moveHere()}
@@ -865,7 +958,7 @@ function VoiceOrb(): ReactNode {
           </div>
         ) : null}
         {inCall ? (
-          <div className="flex shrink-0 items-center gap-1">
+          <div className="flex max-w-full flex-wrap items-center gap-1">
             <button
               type="button"
               onClick={() => audio.setMuted(!audio.muted)}

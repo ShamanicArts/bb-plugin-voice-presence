@@ -1,6 +1,7 @@
 export const REALTIME_DATA_CHANNEL = "oai-events";
 
 export type RealtimeVoiceEvent =
+  | { readonly type: "input.speech"; readonly active: boolean; readonly itemId: string }
   | { readonly type: "transcript.delta"; readonly itemId: string; readonly role: "user" | "assistant"; readonly text: string }
   | { readonly type: "transcript.done"; readonly itemId: string; readonly role: "user" | "assistant"; readonly text: string }
   | { readonly type: "handoff"; readonly id: string; readonly text: string }
@@ -36,6 +37,11 @@ export function parseRealtimeVoiceEvent(data: string): RealtimeVoiceEvent | null
     return null;
   }
   const type = typeof message.type === "string" ? message.type : "";
+  // Standard Realtime boundary events. GPT-live transcript fragments do not
+  // supply equivalent turn boundaries; never synthesize one from a delta gap.
+  if (type === "input_audio_buffer.speech_started" || type === "input_audio_buffer.speech_stopped") {
+    return { type: "input.speech", active: type.endsWith("speech_started"), itemId: itemId(message, "user") };
+  }
   if (type === "delegation.created") {
     const item = record(message.item);
     if (

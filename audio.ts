@@ -122,6 +122,9 @@ export interface PhaseInput {
   readonly sinceOutputMs: number | null;
   /** The agent has a turn running. */
   readonly agentBusy: boolean;
+  /** Provider speech boundary where available; null means level-only presentation. */
+  readonly inputSpeech?: boolean | null;
+  readonly muted?: boolean;
 }
 
 /** Below this the microphone is hearing room, not a voice. */
@@ -132,18 +135,49 @@ const OUTPUT_HOLD_MS = 350;
 /**
  * Resolve one phase from the signals available.
  *
- * Priority is the part that matters, and it is the original's: live output audio
- * beats everything (someone is being spoken to *now*), then the microphone,
- * then agent work, then idle. A simplified `VoiceSpeechArbiter` — the original
- * keeps a fuller floor-holding model with leases; this keeps the ordering it
- * encodes without the lease machinery.
+ * Explicit input activity keeps the listening state during interruption, then
+ * output playback, then agent work. Older level-only callers retain their
+ * output-first ordering. This presentation decision never commits audio.
  */
 export function resolvePhase(input: PhaseInput): CallPhase {
   if (!input.connected) return "muted";
+  if (!input.muted && input.inputSpeech === true) return "listening";
   if (input.sinceOutputMs !== null && input.sinceOutputMs < OUTPUT_HOLD_MS) return "speaking";
+  if (input.muted) return "muted";
+  if (input.inputSpeech === false) return input.agentBusy ? "thinking" : "idle";
   if (input.micLevel >= SPEECH_THRESHOLD) return "listening";
   if (input.agentBusy) return "thinking";
   return "idle";
+}
+
+/** Presentation envelope, independent of frame rate. Never used to finish a turn. */
+export function smoothAudioLevel(previous: number, next: number, elapsedMs: number): number {
+  const seconds = next > previous ? 0.045 : 0.18;
+  const blend = 1 - Math.exp(-Math.max(0, elapsedMs) / (seconds * 1_000));
+  return previous + (next - previous) * blend;
+}
+
+/** Level fallback for transports without speech boundary events. Tracks room floor
+ * and uses hysteresis so a quiet syllable doesn't flicker into agent work.
+ * This is visual activity detection, never audio VAD/commit/response control.
+ */
+export class InputActivity {
+  private floor = 0.003;
+  private peak = 0.003;
+  private active = false;
+
+  sample(level: number, elapsedMs: number): boolean {
+    const decay = Math.exp(-Math.max(0, elapsedMs) / 1_000);
+    this.peak = Math.max(level, this.peak * decay);
+    if (!this.active) {
+      const blend = 1 - Math.exp(-Math.max(0, elapsedMs) / 3_000);
+      this.floor += (Math.min(level, this.floor * 1.5) - this.floor) * blend;
+    }
+    const onset = Math.max(0.012, this.floor * 3);
+    const release = Math.max(this.floor * 1.6, this.peak * 0.12, 0.005);
+    this.active = level >= (this.active ? release : onset);
+    return this.active;
+  }
 }
 
 /** Level the orb is fed while nobody is talking, so it never reads as dead. */

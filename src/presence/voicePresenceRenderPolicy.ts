@@ -34,8 +34,9 @@ export function voicePresenceRenderPolicy(options: {
   readonly performanceMode: VoicePresencePerformanceMode;
 }): VoicePresenceRenderPolicy {
   if (!options.documentVisible || !options.presented) return "paused";
-  if (options.reducedMotion || options.softwareRenderer) return "static";
+  if (options.reducedMotion) return "static";
   if (options.phase === "idle" || options.phase === "muted") return "ambient";
+  if (options.softwareRenderer) return "degraded";
   return options.performanceMode === "degraded" ? "degraded" : "active";
 }
 

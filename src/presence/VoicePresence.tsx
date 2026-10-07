@@ -273,11 +273,11 @@ export function VoicePresence({
       powerPreference: "low-power",
       preserveDrawingBuffer: false,
     });
-    if (!gl) return;
-    if (!gl.getExtension("OES_standard_derivatives")) return;
+    if (!gl) throw new Error("Presence WebGL is unavailable");
+    if (!gl.getExtension("OES_standard_derivatives")) throw new Error("Presence derivatives are unavailable");
 
     const program = createProgram(gl);
-    if (!program) return;
+    if (!program) throw new Error("Presence shader is unavailable");
     const buffer = gl.createBuffer();
     if (!buffer) return;
 
