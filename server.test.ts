@@ -486,15 +486,14 @@ describe("owner-thread narration", () => {
   });
 });
 
-it("refuses an identified handoff until its finalized user transcript exists", async () => {
+it("does not block an explicit delegation on an unavailable caption identity", async () => {
   const { rpc, calls, harness } = await setup();
   const call = await rpc("call_start", { threadId: THREAD }) as { callId: string };
-  const handoff = { callId: call.callId, handoffId: "race", utteranceId: "in-flight", text: "partial" };
-  expect(await rpc("call_handoff", handoff)).toEqual({ ok: false, duplicate: false });
-  expect(calls.some((entry) => entry.method === "send")).toBe(false);
-  await rpc("call_transcript", { callId: call.callId, itemId: "in-flight", role: "user", text: "complete spoken request" });
+  const handoff = { callId: call.callId, handoffId: "race", utteranceId: "not-stored", text: "complete delegated request" };
   expect(await rpc("call_handoff", handoff)).toEqual({ ok: true, duplicate: false });
-  expect((calls.find((entry) => entry.method === "send")?.args.input as Array<{ text: string }>)[0]?.text)
-    .toBe("complete spoken request");
+  expect(await rpc("call_handoff", handoff)).toEqual({ ok: true, duplicate: true });
+  const sends = calls.filter((entry) => entry.method === "send");
+  expect(sends).toHaveLength(1);
+  expect((sends[0]?.args.input as Array<{ text: string }>)[0]?.text).toBe("complete delegated request");
   await harness.lifecycle.dispose();
 });

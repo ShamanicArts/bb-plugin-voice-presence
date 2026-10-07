@@ -1,45 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { CallHandoffQueue } from "./call-turns";
 import { InputActivity, resolvePhase, smoothAudioLevel } from "./audio";
 import { parseRealtimeVoiceEvent } from "./realtime-events";
 import { voicePresenceRenderPolicy } from "./src/presence/voicePresenceRenderPolicy";
-
-describe("handoff turn ordering", () => {
-  it("waits for the complete identified utterance and resumed speech to end", () => {
-    const queue = new CallHandoffQueue();
-    queue.draft("user-1");
-    expect(queue.request("work-1", "inspect" , true)).toBeNull();
-    expect(queue.ready(false)).toEqual([]); // silence is not a final transcript
-    queue.finalize("unrelated", "older words");
-    expect(queue.ready(false)).toEqual([]);
-    queue.finalize("user-1", "inspect the repository and fix the cutoff");
-    expect(queue.ready(true)).toEqual([]); // user resumed before persistence completed
-    expect(queue.ready(false)).toEqual([{ id: "work-1", utteranceId: "user-1", text: "inspect the repository and fix the cutoff" }]);
-    expect(queue.ready(false)).toEqual([]);
-  });
-  it("uses delegation content when no user turn is identified", () => {
-    const queue = new CallHandoffQueue();
-    expect(queue.request("new-work", "new request")).toEqual({ id: "new-work", utteranceId: null, text: "new request" });
-  });
-  it("keeps the full final utterance when delegation follows finalization, then clears it for a new draft", () => {
-    const queue = new CallHandoffQueue();
-    queue.finalize("previous-user", "full request with important details");
-    expect(queue.request("work", "summary")).toEqual({ id: "work", utteranceId: "previous-user", text: "full request with important details" });
-    queue.draft("next-user");
-    expect(queue.request("new-work", "new summary")).toBeNull();
-    queue.finalize("next-user", "full new request");
-    expect(queue.ready(false)).toEqual([{ id: "new-work", utteranceId: "next-user", text: "full new request" }]);
-  });
-  it("defers an explicit request during overlapping input and rechecks before sending", () => {
-    const queue = new CallHandoffQueue();
-    queue.request("work", "complete request", true);
-    expect(queue.ready(true)).toEqual([]);
-    const [ready] = queue.ready(false);
-    queue.defer(ready!);
-    expect(queue.ready(true)).toEqual([]);
-    expect(queue.ready(false)).toEqual([ready]);
-  });
-});
 
 describe("presentation activity, separate from audio turn semantics", () => {
   it("keeps quiet varying speech listening while the backing agent works", () => {

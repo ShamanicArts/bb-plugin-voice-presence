@@ -590,9 +590,6 @@ export default async function plugin(bb: BbPluginApi) {
                WHERE call_id = ? AND item_id = ? AND role = 'user'`,
             )
             .get(callId, utteranceId) as TranscriptRow | undefined;
-      // An identified utterance must already be finalized. Do not downgrade an
-      // in-flight turn into arbitrary text when its persistence RPC races us.
-      if (utteranceId != null && transcript === undefined) return { ok: false, duplicate: false };
       const durableText = transcript?.text.trim() || text.trim();
       const stableUtteranceId = utteranceId ?? transcript?.item_id ?? handoffId;
       const deliveryId = `utterance:${callId}:${stableUtteranceId}`;
@@ -611,6 +608,7 @@ export default async function plugin(bb: BbPluginApi) {
           mode: "auto",
           input: [{ type: "text", text: providerText, mentions: [] }],
         });
+        bb.log.info(`voice handoff accepted call=${callId} handoff=${handoffId} thread=${call.thread_id}`);
         return { ok: true, duplicate: false };
       } catch (cause) {
         db.prepare("DELETE FROM voice_deliveries WHERE delivery_id = ?").run(deliveryId);

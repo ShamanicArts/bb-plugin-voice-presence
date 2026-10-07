@@ -165,6 +165,8 @@ export class InputActivity {
   private floor = 0.003;
   private peak = 0.003;
   private active = false;
+  /** Speech energy relative to the measured recent peak and room floor. */
+  level = 0;
 
   sample(level: number, elapsedMs: number): boolean {
     const decay = Math.exp(-Math.max(0, elapsedMs) / 1_000);
@@ -176,6 +178,7 @@ export class InputActivity {
     const onset = Math.max(0.012, this.floor * 3);
     const release = Math.max(this.floor * 1.6, this.peak * 0.12, 0.005);
     this.active = level >= (this.active ? release : onset);
+    this.level = Math.max(0, Math.min(1, (level - this.floor) / Math.max(onset, this.peak - this.floor)));
     return this.active;
   }
 }

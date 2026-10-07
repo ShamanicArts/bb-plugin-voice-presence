@@ -9,9 +9,9 @@ thread cannot silently steal the active media session.
 ## Fast voice, durable work
 
 The realtime model handles quick conversation from a bounded snapshot of the
-owner thread. Completed voice exchanges are persisted against that owner. When
+owner thread. Identified completed voice exchanges are persisted against that owner. When
 a request genuinely needs tools, code changes, approvals, or a durable artifact,
-an explicit client-managed handoff sends the complete finalized utterance and
+an explicit client-managed handoff sends its complete request and
 bounded active-call context to the owner BB thread exactly once. The thread's
 streamed response is then narrated into the same live call.
 
@@ -21,3 +21,5 @@ The presence orb reflects listening, muted, thinking, and speaking state in a
 compact strip styled like BB's pinned controls. The strip remains visible across
 navigation, identifies where the call belongs, and can move it to the current
 thread without replacing the media session.
+
+Short, gentle rising and falling chimes mark connection and disconnection.

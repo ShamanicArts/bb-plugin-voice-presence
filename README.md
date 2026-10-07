@@ -13,14 +13,17 @@ transport and the durable BB agent have deliberately different jobs:
 - The realtime model owns quick spoken conversation.
 - The BB thread remains the sole owner of durable work, tools, approvals, and
   repository changes.
-- Every finalized user/voice exchange is persisted against that exact thread.
-  Voice-only conversation stays low-latency; delegated work receives the
-  bounded call transcript as context.
-- An explicit client-managed handoff sends the complete finalized utterance
-  into that exact thread. Retries are deduplicated by utterance identity.
+- Final captions with provider-issued item identities are persisted against
+  that exact thread. Host caption parts without identities remain live captions.
+  Delegated work receives the bounded stored call context.
+- An explicit client-managed handoff sends its complete request into that exact
+  thread immediately. Retries are deduplicated by the delegation identity.
+  Caption completion and persistence do not gate task delivery.
 - The thread's provider output is narrated back into the active call.
 - The microphone can be muted without leaving, and the call can be moved to the
   thread currently in view without renegotiating media.
+- A quiet rising chime marks connection; a falling chime marks the end of an
+  established call. Muting the microphone keeps these output sounds available.
 
 The call retains an explicit owner thread id and title. If the user navigates to
 another thread, the compact call strip names its owner and offers direct Open
@@ -41,6 +44,12 @@ without creating durable work. The separate voice transport thread is hidden and
 scoped to the plugin data directory; it is transport, not a second BB work thread.
 
 ## Development
+
+When this checkout is installed directly in a running BB, `dist` backs the live
+frontend asset URLs. Building here can expose candidate bytes to new clients
+without a plugin reload. Build a source snapshot with `bb plugin build <path>`
+in thread storage for isolated acceptance, and keep its artifacts separate until
+the change is ready. Reloading this voice plugin disconnects its active call.
 
 ```sh
 npm install

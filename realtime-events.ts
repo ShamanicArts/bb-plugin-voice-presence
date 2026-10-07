@@ -1,9 +1,9 @@
 export const REALTIME_DATA_CHANNEL = "oai-events";
 
 export type RealtimeVoiceEvent =
-  | { readonly type: "input.speech"; readonly active: boolean; readonly itemId: string }
-  | { readonly type: "transcript.delta"; readonly itemId: string; readonly role: "user" | "assistant"; readonly text: string }
-  | { readonly type: "transcript.done"; readonly itemId: string; readonly role: "user" | "assistant"; readonly text: string }
+  | { readonly type: "input.speech"; readonly active: boolean; readonly itemId: string | null }
+  | { readonly type: "transcript.delta"; readonly itemId: string | null; readonly role: "user" | "assistant"; readonly text: string }
+  | { readonly type: "transcript.done"; readonly itemId: string | null; readonly role: "user" | "assistant"; readonly text: string }
   | { readonly type: "handoff"; readonly id: string; readonly text: string }
   | { readonly type: "error"; readonly message: string };
 
@@ -11,7 +11,7 @@ function record(value: unknown): Record<string, unknown> | null {
   return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : null;
 }
 
-function itemId(message: Record<string, unknown>, role: "user" | "assistant"): string {
+function itemId(message: Record<string, unknown>): string | null {
   const turn = record(message.turn);
   const item = record(message.item);
   const response = record(message.response);
@@ -24,7 +24,7 @@ function itemId(message: Record<string, unknown>, role: "user" | "assistant"): s
     response?.id,
   ];
   return candidates.find((value) => typeof value === "string" && value.length > 0 && value.length <= 256) as string | undefined
-    ?? `live-${role}`;
+    ?? null;
 }
 
 export function parseRealtimeVoiceEvent(data: string): RealtimeVoiceEvent | null {
@@ -40,7 +40,7 @@ export function parseRealtimeVoiceEvent(data: string): RealtimeVoiceEvent | null
   // Standard Realtime boundary events. GPT-live transcript fragments do not
   // supply equivalent turn boundaries; never synthesize one from a delta gap.
   if (type === "input_audio_buffer.speech_started" || type === "input_audio_buffer.speech_stopped") {
-    return { type: "input.speech", active: type.endsWith("speech_started"), itemId: itemId(message, "user") };
+    return { type: "input.speech", active: type.endsWith("speech_started"), itemId: itemId(message) };
   }
   if (type === "delegation.created") {
     const item = record(message.item);
@@ -67,7 +67,7 @@ export function parseRealtimeVoiceEvent(data: string): RealtimeVoiceEvent | null
     const role = turn.role;
     const text = typeof turn.transcript === "string" ? turn.transcript.trim() : "";
     return (role === "user" || role === "assistant") && text.length > 0
-      ? { type: "transcript.done", itemId: itemId(message, role), role, text }
+      ? { type: "transcript.done", itemId: itemId(message), role, text }
       : null;
   }
   if (type === "input_transcript.added" || type === "output_transcript.added") {
@@ -80,7 +80,7 @@ export function parseRealtimeVoiceEvent(data: string): RealtimeVoiceEvent | null
           ? item.text
           : "";
     return text.length > 0
-      ? { type: "transcript.delta", itemId: itemId(message, role), role, text }
+      ? { type: "transcript.delta", itemId: itemId(message), role, text }
       : null;
   }
   const deltaRole =
@@ -105,7 +105,7 @@ export function parseRealtimeVoiceEvent(data: string): RealtimeVoiceEvent | null
             ? turn.text
             : "";
     return text.length > 0
-      ? { type: "transcript.delta", itemId: itemId(message, deltaRole), role: deltaRole, text }
+      ? { type: "transcript.delta", itemId: itemId(message), role: deltaRole, text }
       : null;
   }
   const doneRole =
@@ -125,7 +125,7 @@ export function parseRealtimeVoiceEvent(data: string): RealtimeVoiceEvent | null
           ? message.text.trim()
           : "";
     return text.length > 0
-      ? { type: "transcript.done", itemId: itemId(message, doneRole), role: doneRole, text }
+      ? { type: "transcript.done", itemId: itemId(message), role: doneRole, text }
       : null;
   }
   if (type === "error") {
